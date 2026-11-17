@@ -463,7 +463,11 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
 
     // skyline filler: instanced boxes with a single facade atlas material
     var fcount = w.filler.length;
-    var imat = new THREE.MeshStandardMaterial({ map: FACADE_CACHE['stone:0'] || facadeMat('stone', 0), roughness: 0.9 });
+    // NB: `map:` takes a TEXTURE, not a Material. Passing the cached facade
+    // material here made three crash on first render (refreshTransformUniform
+    // -> 'normalMatrix.elements' undefined). Take its .map instead.
+    var facadeSrc = FACADE_CACHE['stone:0'] || facadeMat('stone', 0);
+    var imat = new THREE.MeshStandardMaterial({ map: facadeSrc.map || null, roughness: 0.9 });
     instFiller = new THREE.InstancedMesh(BOX, imat, fcount);
     instFiller.castShadow = false; instFiller.receiveShadow = false;
     var dummy = new THREE.Object3D();
@@ -508,13 +512,17 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
 
 
   // ------------------------------------------------------------- skater rig
+  // One factory so the title-screen attract 'ghost' skater and the real
+  // player are built identically (and can never drift apart).
+  function makeSkaterRig(matOverride) {
   var skater = new THREE.Group();
   var boardGroup = new THREE.Group();
   var parts = {};
   (function buildSkater() {
     function box(w, h, d, mat, x, y, z) {
-      var m = new THREE.Mesh(BOX, mat); m.scale.set(w, h, d); m.position.set(x, y, z);
-      m.castShadow = true; return m;
+      var m = new THREE.Mesh(BOX, matOverride ? matOverride(mat) : mat);
+      m.scale.set(w, h, d); m.position.set(x, y, z);
+      m.castShadow = !matOverride; return m;
     }
     var body = new THREE.Group(); skater.add(body); parts.body = body;
 
@@ -569,8 +577,18 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       }
     }
     skater.add(boardGroup);
-    scene.add(skater);
   })();
+  return { group: skater, boardGroup: boardGroup, parts: parts };
+  }
+  var rig = makeSkaterRig(null);
+  var skater = rig.group, boardGroup = rig.boardGroup, parts = rig.parts;
+  scene.add(skater);
+  // ghost twin for the attract-mode demo (translucent), hidden until boot.
+  // Materials are built lazily on first show so they never depend on M's init order.
+  var GHOST_M = null;
+  var ghostRig = makeSkaterRig(function (base) { return (GHOST_M && GHOST_M[base.uuid]) || base; });
+  ghostRig.group.visible = false;
+  scene.add(ghostRig.group);
 
   var sparkPoints = null, sparkPool = [];
     // grind sparks
@@ -735,6 +753,8 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
 
   window.addEventListener('keydown', function (e) {
     if (e.repeat) return;
+    if (attract && !running && e.code !== 'F5' && e.code !== 'F12' &&
+        e.code.indexOf('F') !== 0 && !e.metaKey && !e.ctrlKey) { startPlaying(); return; }
     if (e.code === 'Escape' || e.code === 'KeyP') { togglePause(); return; }
     if (running && (document.activeElement && document.activeElement.tagName === 'BUTTON')) document.activeElement.blur();
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].indexOf(e.code) >= 0) e.preventDefault();
@@ -742,6 +762,9 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     if (t) tryTrick(t);
   }, { passive: false });
   window.addEventListener('keyup', function (e) { C.keyUp(inp, e.code); });
+  window.addEventListener('pointerdown', function () {
+    if (attract && !running) startPlaying();
+  }, { passive: true });
   window.addEventListener('blur', function () {
     for (var k in inp) if (typeof inp[k] === 'boolean') inp[k] = false;
     inp.pressed.length = 0;
@@ -938,18 +961,19 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
   }
 
   // ------------------------------------------------------------ pose rig
-  function poseSkater(p, dt) {
-    skater.position.set(p.x, p.y, p.z);
-    skater.rotation.y = -p.heading + Math.PI / 2;
-    var t = performance.now() * 0.001;
+  function poseRig(rig, p, lean, dt) {
+    var sk = rig.group, bg = rig.boardGroup, parts = rig.parts;
+    sk.position.set(p.x, p.y, p.z);
+    sk.rotation.y = -p.heading + Math.PI / 2;
+    var t = (globalNow || performance.now()) * 0.001;
     var spd = Math.hypot(p.vx, p.vz);
     var crouch = p.crouch;
     // board spin (flips) is board-local roll around its long axis
-    boardGroup.rotation.set(0, p.shoveRot * 0.12, p.boardSpin);
-    boardGroup.position.set(0, 0, 0);
+    bg.rotation.set(0, p.shoveRot * 0.12, p.boardSpin);
+    bg.position.set(0, 0, 0);
     parts.body.rotation.set(0, p.bodyYaw * 0.5, 0);
 
-    var lean = clamp((inp.right ? 1 : 0) - (inp.left ? 1 : 0), -1, 1) * clamp(spd / 12, 0, 1);
+    lean = clamp(lean, -1, 1) * clamp(spd / 12, 0, 1);
     parts.body.rotation.z = -lean * 0.28 + (p.state === 'manual' ? (inp.back ? 0.3 : -0.1) : 0);
     parts.body.position.y = -crouch * 0.34;
     parts.torso.rotation.x = crouch * 0.42 + (p.state === 'air' ? -0.1 : 0);
@@ -975,6 +999,157 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     for (var i = 0; i < parts.wheels.length; i++) parts.wheels[i].rotation.x += spd * dt * 3.2;
   }
 
+  function poseSkater(p, dt) {
+    poseRig(rig, p, (inp.right ? 1 : 0) - (inp.left ? 1 : 0), dt);
+  }
+
+
+  // ------------------------------------------------------- attract mode
+  // Title-screen demo: a translucent 'ghost' skater runs the same bot policy
+  // the headless sim uses (chase nearest rail, ollie on, spin tricks in the
+  // air) while the camera orbits it. Gated by `attract` -- true only while
+  // the menu is up; any key/touch/SKATE hands control to the real player.
+  var globalNow = 0;   // automation can freeze the idle-animation clock
+  var attract = false;
+  var ghost = null, ghostInp = null, ghostCam = null, ghostAge = 0;
+  var ghostTarget = null, ghostTargetAge = 0, ghostRailHits = 0, ghostFlipTimer = 0;
+  var orbitAngle = 0;
+
+  function ghostMat(base) {
+    // NB: do NOT hand-build a MeshStandardMaterial here and borrow base.map --
+    // the shared texture is already GPU-uploaded for the real rig and three
+    // then crashes in refreshTransformUniform ('normalMatrix.elements').
+    // A plain translucent colour reads as a hologram and cannot crash.
+    var m = new THREE.MeshStandardMaterial({ color: base.color.clone(), roughness: base.roughness, metalness: base.metalness });
+    m.transparent = true;
+    m.opacity = 0.52;
+    m.depthWrite = false;
+    if ('emissive' in m && m.emissive) { m.emissive = new THREE.Color(0x3fd2c7); m.emissiveIntensity = 0.34; }
+    return m;
+  }
+  function buildGhostMats() {
+    if (GHOST_M) return;
+    GHOST_M = {};
+    for (var mk in M) GHOST_M[M[mk].uuid] = ghostMat(M[mk]);
+  }
+
+  function pickGhostTarget(w) {
+    var best = null, bd = 1e18;
+    for (var i = 0; i < w.segs.length; i++) {
+      var seg = w.segs[i];
+      if (seg.kind !== 'grind' || seg.len2 < 100) continue;
+      var mx = (seg.ax + seg.bx) / 2, mz = (seg.az + seg.bz) / 2;
+      var d = (mx - ghost.x) * (mx - ghost.x) + (mz - ghost.z) * (mz - ghost.z);
+      if (d < bd) { bd = d; best = seg; }
+    }
+    ghostTarget = best; ghostTargetAge = 0;
+  }
+
+  function resetGhost() {
+    if (!ghost) {
+      ghost = C.makePlayer(world);
+      ghostInp = C.makeInput();
+      ghostCam = { x: ghost.x - 9, y: 7, z: ghost.z - 9, lx: ghost.x, ly: 1, lz: ghost.z, fov: 62 };
+    } else {
+      ghost.x = world.spawn.x; ghost.z = world.spawn.z; ghost.y = 0.09;
+      ghost.vx = ghost.vz = ghost.vy = 0; ghost.state = 'roll';
+      ghost.combo = []; ghost.manualPts = 0; ghost.boardSpin = ghost.shoveRot = ghost.bodyYaw = 0;
+    }
+    ghostAge = 0; ghostRailHits = 0; ghostFlipTimer = 0;
+    pickGhostTarget(world);
+  }
+
+  var GHOST_TRICKS = ['kickflip', 'heelflip', 'fs180', 'fs360', 'shove', 'bs180'];
+  function stepGhost(dt) {
+    if (!ghost || !world) return;
+    var w = world, inp = ghostInp, p = ghost;
+    inp.fwd = true; inp.back = false; inp.left = inp.right = inp.jump = inp.manual = false;
+    if (ghostTarget) {
+      var mx = (ghostTarget.ax + ghostTarget.bx) / 2, mz = (ghostTarget.az + ghostTarget.bz) / 2;
+      var dx = mx - p.x, dz = mz - p.z, dist = Math.hypot(dx, dz);
+      var diff = C.angDist(Math.atan2(dz, dx), p.heading);
+      inp.left = diff > 0.12; inp.right = diff < -0.12;
+      if (dist < 3.2 && p.state === 'roll') inp.jump = true;
+      if (dist < 2.0 || ghostTargetAge > 720) pickGhostTarget(w);
+      ghostTargetAge++;
+    } else {
+      pickGhostTarget(w);
+    }
+    // periodic bail so the loop always restarts with fresh energy
+    if (ghostAge > 60 * 26 && p.state === 'roll') C.bail(p, '');
+    if (p.state === 'air') {
+      ghostFlipTimer -= dt;
+      if (ghostFlipTimer <= 0) {
+        if (C.startTrick(p, GHOST_TRICKS[(Math.random() * GHOST_TRICKS.length) | 0])) {
+          emitSparks(p.x, p.y, p.z, 4);
+          ghostFlipTimer = 0.22;
+        }
+      }
+    } else ghostFlipTimer = 0;
+    if (p.state === 'grind') {
+      emitSparks(p.x, p.y + 0.02, p.z, 2);
+      if (!ghost.wasGrind) ghostRailHits++;
+      p.wasGrind = true;
+    } else p.wasGrind = false;
+    C.step(p, w, dt, inp);
+    ghostAge += dt;
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.z)) { resetGhost(); return; }
+    var b = w.bounds;
+    if (p.x < b.x0 - 12 || p.x > b.x1 + 12 || p.z < b.z0 - 12 || p.z > b.z1 + 12) resetGhost();
+    if (ghostAge > 60 * 55) resetGhost();
+    // pose the ghost from its own input lean
+    poseRig(ghostRig, p, (inp.right ? 1 : 0) - (inp.left ? 1 : 0), dt);
+    // orbiting chase camera
+    orbitAngle += dt * 0.16;
+    var spd = Math.hypot(p.vx, p.vz);
+    var back = 9.5 + clamp(spd * 0.16, 0, 2.5);
+    var ang = -p.heading + Math.PI / 2 + Math.sin(orbitAngle) * 0.85;
+    var tx = p.x + Math.sin(ang) * back, tz = p.z + Math.cos(ang) * back;
+    var ty = p.y + 4.2 + Math.sin(orbitAngle * 0.7) * 1.1;
+    var k = 1 - Math.pow(0.02, dt);
+    ghostCam.x = lerp(ghostCam.x, tx, k);
+    ghostCam.y = lerp(ghostCam.y, Math.max(ty, p.y + 1.6), k);
+    ghostCam.z = lerp(ghostCam.z, tz, k);
+    var kl = 1 - Math.pow(0.005, dt);
+    ghostCam.lx = lerp(ghostCam.lx, p.x, kl);
+    ghostCam.ly = lerp(ghostCam.ly, p.y + 1.1, kl);
+    ghostCam.lz = lerp(ghostCam.lz, p.z, kl);
+    ghostCam.fov = lerp(ghostCam.fov, 60 + clamp(spd * 0.5, 0, 10) + (p.state === 'air' ? 5 : 0), 1 - Math.pow(0.05, dt));
+    camera.position.set(ghostCam.x, ghostCam.y, ghostCam.z);
+    camera.lookAt(ghostCam.lx, ghostCam.ly, ghostCam.lz);
+    if (Math.abs(camera.fov - ghostCam.fov) > 0.01) { camera.fov = ghostCam.fov; camera.updateProjectionMatrix(); }
+    sun.position.set(p.x - 160, 210, p.z + 120);
+    sun.target.position.set(p.x, 0, p.z);
+    sun.target.updateMatrixWorld();
+  }
+
+  function setAttract(on) {
+    if (on === attract) return;
+    attract = on;
+    if (on) {
+      buildGhostMats();
+      ghostRig.group.visible = true;
+      skater.visible = false;
+      resetGhost();
+    } else {
+      skater.visible = true;
+      // hand the camera to the real player smoothly
+      cam.x = camera.position.x; cam.y = camera.position.y; cam.z = camera.position.z;
+      cam.lx = player.x; cam.ly = player.y + 1.1; cam.lz = player.z;
+      cam.fov = 62;
+    }
+  }
+
+  function startPlaying() {
+    if (running) return;
+    Audio2.resume();
+    setAttract(false);
+    el.menu.classList.add('hide');
+    running = true; paused = false;
+    last = performance.now();
+    flash('SKATE', 0);
+  }
+
 
   // ------------------------------------------------------------- game state
   var player = null, running = false, paused = false, seed = (Math.random() * 1e9) | 0;
@@ -989,6 +1164,7 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     cam = { x: player.x - 8, y: 6, z: player.z - 8, lx: player.x, ly: 1, lz: player.z, fov: 62 };
     el.scVal.textContent = '0';
     el.scSub.innerHTML = '&nbsp;';
+    if (attract) { ghost = null; resetGhost(); }
     lastBankSeen = null;
   }
 
@@ -1016,14 +1192,26 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
   }
 
   // ---------------------------------------------------------------- loop
-  var last = performance.now(), acc = 0, FIXED = 1 / 120;
+  var last = performance.now(), acc = 0, gAcc = 0, FIXED = 1 / 120;
   var fpsAcc = 0, fpsN = 0;
 
   function frame(now) {
     requestAnimationFrame(frame);
     var dt = (now - last) / 1000; last = now;
     if (dt > 0.25) dt = 0.25;
-    if (!running || paused) { renderOnce(); return; }
+    if (!running || paused) {
+      if (attract && !paused) {
+        gAcc += dt;
+        var gg = 0;
+        while (gAcc >= FIXED && gg++ < 8) { stepGhost(FIXED); gAcc -= FIXED; }
+        if (gg >= 8) gAcc = 0;
+        updateSparks(dt);
+        renderer.render(scene, camera);
+      } else {
+        renderOnce();
+      }
+      return;
+    }
 
     // fixed-step physics for determinism
     acc += dt;
@@ -1129,13 +1317,7 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       Audio2.scrape(0);
     }
   }
-  document.getElementById('btnPlay').addEventListener('click', function () {
-    Audio2.resume();
-    el.menu.classList.add('hide');
-    running = true; paused = false;
-    last = performance.now();
-    flash('SKATE', 0);
-  });
+  document.getElementById('btnPlay').addEventListener('click', startPlaying);
   document.getElementById('btnResume').addEventListener('click', togglePause);
   document.getElementById('btnRestart').addEventListener('click', function () {
     paused = false; el.pause.classList.add('hide');
@@ -1148,6 +1330,7 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     newCity(seed);
     el.load.textContent = 'ready';
     resize();
+    setAttract(true);
     requestAnimationFrame(frame);
   } catch (e) {
     el.load.textContent = 'error: ' + (e && e.message ? e.message : e);
@@ -1161,7 +1344,23 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     startGame: function () { document.getElementById('btnPlay').click(); },
     newCity: newCity,
     get running() { return running; },
-    get paused() { return paused; }
+    get paused() { return paused; },
+    get attract() { return attract; },
+    get ghost() { return ghost; },
+    renderer: renderer,
+    pumpFrames: function (n, withRender) {
+      // automation helper: RAF never fires in headless browsers, so drive the
+      // same code path frame() uses, n times at FIXED dt. Render only when
+      // asked -- a full render costs ~1s under swiftshader and would stall
+      // CDP probes that pump thousands of physics steps.
+      for (var i = 0; i < n; i++) {
+        if (attract) stepGhost(FIXED);
+        else if (running && !paused) C.step(player, world, FIXED, inp);
+      }
+      updateSparks(n * FIXED);
+      if (withRender) renderer.render(scene, camera);
+    },
+    renderNow: function () { renderer.render(scene, camera); return true; }
   };
 })();
 }
