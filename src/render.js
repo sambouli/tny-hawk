@@ -709,7 +709,7 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     help: document.getElementById('help'), menu: document.getElementById('menu'),
     pause: document.getElementById('pause'), load: document.getElementById('load'),
     keyList: document.getElementById('keyList'), touch: document.getElementById('touch'),
-    mm: document.getElementById('mm')
+    mm: document.getElementById('mm'), minimap: document.getElementById('minimap')
   };
 
   var HELP_LINES = [
@@ -756,6 +756,7 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     if (attract && !running && e.code !== 'F5' && e.code !== 'F12' &&
         e.code.indexOf('F') !== 0 && !e.metaKey && !e.ctrlKey) { startPlaying(); return; }
     if (e.code === 'Escape' || e.code === 'KeyP') { togglePause(); return; }
+    if (e.code === 'KeyM') { setMinimap(!minimapOn); return; }
     if (running && (document.activeElement && document.activeElement.tagName === 'BUTTON')) document.activeElement.blur();
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].indexOf(e.code) >= 0) e.preventDefault();
     var t = C.keyDown(inp, e.code);
@@ -786,6 +787,48 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
 
   // touch controls built from hudLayout so they never collide with HUD panels
   var layout = null;
+  // Minimap is off by default (it crowded small/phone screens); toggle with M
+  // or the on-screen MAP button. When off we hide the panel and skip drawing.
+  var minimapOn = false;
+  function applyHud() {
+    layout = C.hudLayout(window.innerWidth, window.innerHeight, isTouch);
+    var mmRect = null;
+    for (var i = 0; i < layout.panels.length; i++) {
+      var p = layout.panels[i];
+      if (p.id === 'minimap') { mmRect = p; continue; }   // handled below with the toggle
+      var node = document.getElementById(p.id);
+      if (!node) continue;
+      node.style.left = p.x + 'px';
+      node.style.top = p.y + 'px';
+      node.style.width = p.w + 'px';
+      node.style.height = p.h + 'px';
+    }
+    // Minimap + its toggle share the top-right corner. Toggle sits at the top;
+    // the map panel appears beneath it only when enabled.
+    var btn = document.getElementById('mmToggle');
+    if (mmRect && btn) {
+      var bh = 34;
+      btn.style.right = (window.innerWidth - (mmRect.x + mmRect.w)) + 'px';
+      btn.style.top = mmRect.y + 'px';
+      var mmNode = document.getElementById('minimap');
+      if (minimapOn) {
+        mmNode.style.display = '';
+        mmNode.style.left = mmRect.x + 'px';
+        mmNode.style.top = (mmRect.y + bh + 6) + 'px';
+        mmNode.style.width = mmRect.w + 'px';
+        mmNode.style.height = mmRect.h + 'px';
+      } else {
+        mmNode.style.display = 'none';
+      }
+    }
+  }
+  function setMinimap(on) {
+    minimapOn = !!on;
+    try { localStorage.setItem('tny_mm', minimapOn ? '1' : '0'); } catch (e) {}
+    var b = document.getElementById('mmToggle');
+    if (b) b.classList.toggle('act', minimapOn);
+    applyHud();
+  }
   function buildTouch() {
     el.touch.innerHTML = '';
     if (!isTouch) return;
@@ -1269,7 +1312,7 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     }
     if (msgTimer > 0) { msgTimer -= dt; if (msgTimer <= 0) hideMsg(); }
 
-    drawMinimap(player, world);
+    if (minimapOn) drawMinimap(player, world);
     renderer.render(scene, camera);
   }
 
@@ -1302,6 +1345,7 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     if (isTouch) buildTouch();
+    applyHud();
   }
   window.addEventListener('resize', resize);
 
@@ -1319,6 +1363,13 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
   }
   document.getElementById('btnPlay').addEventListener('click', startPlaying);
   document.getElementById('btnResume').addEventListener('click', togglePause);
+  (function () {
+    var b = document.getElementById('mmToggle');
+    if (!b) return;
+    // stopPropagation so tapping MAP during attract mode doesn't also start the game
+    b.addEventListener('pointerdown', function (e) { e.stopPropagation(); });
+    b.addEventListener('click', function (e) { e.stopPropagation(); setMinimap(!minimapOn); });
+  })();
   document.getElementById('btnRestart').addEventListener('click', function () {
     paused = false; el.pause.classList.add('hide');
     newCity((Math.random() * 1e9) | 0);
@@ -1327,6 +1378,10 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
 
   // boot
   try {
+    var mmPref = '0';
+    try { mmPref = localStorage.getItem('tny_mm') || '0'; } catch (e) {}
+    minimapOn = (mmPref === '1');
+    (function () { var b = document.getElementById('mmToggle'); if (b) b.classList.toggle('act', minimapOn); })();
     newCity(seed);
     el.load.textContent = 'ready';
     resize();
