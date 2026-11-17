@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0d1015">
+<title>TONY HAWK: NYC — Skate the City</title>
+<style>
+  :root{
+    --ink:#eef2f7; --dim:#9aa6b5; --accent:#ffb02e; --accent2:#3fd2c7;
+    --panel:rgba(10,14,20,.62); --edge:rgba(255,255,255,.12);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;overflow:hidden;background:#05070a;color:var(--ink);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  #gl{position:fixed;inset:0;display:block;width:100%;height:100%}
+  .hud{position:fixed;inset:0;pointer-events:none;z-index:5;user-select:none}
+  .panel{position:absolute;background:var(--panel);border:1px solid var(--edge);
+    border-radius:12px;backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px)}
+  #score{padding:9px 13px}
+  #score .lbl{font-size:10px;letter-spacing:.22em;color:var(--dim);text-transform:uppercase}
+  #score .val{font-size:clamp(22px,4.4vw,38px);font-weight:800;line-height:1.02;
+    font-variant-numeric:tabular-nums;text-shadow:0 2px 14px rgba(255,176,46,.35)}
+  #score .sub{font-size:11px;color:var(--dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #minimap{padding:0;overflow:hidden}
+  #minimap canvas{width:100%;height:100%;display:block}
+  #spot{display:flex;align-items:center;justify-content:center;gap:8px;padding:0 12px;font-size:12px}
+  #spot b{color:var(--accent);font-weight:700}
+  #msg{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+  #msg .big{font-size:clamp(20px,5.4vw,44px);font-weight:900;letter-spacing:-.02em;
+    text-transform:uppercase;text-shadow:0 3px 24px rgba(0,0,0,.6);opacity:0;transform:translateY(8px) scale(.94);
+    transition:opacity .16s ease,transform .16s ease}
+  #msg .big.on{opacity:1;transform:none}
+  #msg .pts{font-size:clamp(15px,3.6vw,26px);font-weight:800;color:var(--accent)}
+  #help{padding:9px 11px;font-size:11px;line-height:1.55;color:var(--dim)}
+  #help kbd{display:inline-block;min-width:17px;padding:1px 5px;margin:0 1px;border-radius:5px;
+    background:rgba(255,255,255,.1);border:1px solid var(--edge);color:var(--ink);
+    font:600 10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;text-align:center}
+  #help .t{color:var(--accent2);font-weight:700}
+  #combo{position:absolute;left:50%;top:56%;transform:translateX(-50%);text-align:center;font-weight:800;
+    font-size:clamp(16px,3.8vw,26px);color:var(--accent2);text-shadow:0 2px 16px rgba(63,210,199,.4);opacity:0;
+    transition:opacity .2s}
+  #combo.on{opacity:1}
+  #speed{position:absolute;right:14px;bottom:14px;font-size:11px;color:var(--dim);
+    font-variant-numeric:tabular-nums;text-align:right}
+  #speed b{color:var(--ink);font-size:16px}
+  /* touch controls */
+  #touch{position:absolute;inset:0;pointer-events:none}
+  .tc{position:absolute;pointer-events:auto;border-radius:50%;border:1px solid var(--edge);
+    background:rgba(12,17,24,.5);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:800;letter-spacing:.06em;color:var(--dim)}
+  .tc.act{background:rgba(255,176,46,.28);color:#fff;border-color:rgba(255,176,46,.6)}
+  #stickL .knob{position:absolute;width:44%;height:44%;border-radius:50%;background:rgba(255,255,255,.22);
+    border:1px solid var(--edge);left:28%;top:28%}
+  /* overlays */
+  .screen{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:18px;background:radial-gradient(120% 90% at 50% 10%,#1b2432 0%,#080b11 62%,#05070a 100%);
+    text-align:center;padding:24px}
+  .screen.hide{display:none}
+  .logo{font-size:clamp(30px,9vw,74px);font-weight:900;letter-spacing:-.035em;line-height:.95}
+  .logo span{color:var(--accent)}
+  .tag{color:var(--dim);font-size:13px;max-width:52ch;line-height:1.6}
+  .btn{pointer-events:auto;cursor:pointer;border:0;border-radius:999px;padding:14px 34px;font-size:16px;
+    font-weight:800;letter-spacing:.03em;color:#14181f;background:linear-gradient(180deg,#ffd06a,var(--accent));
+    box-shadow:0 10px 30px rgba(255,176,46,.28)}
+  .btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--edge);box-shadow:none;font-weight:700;font-size:13px;padding:10px 22px}
+  .keys{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:7px 16px;max-width:640px;
+    font-size:12px;color:var(--dim);text-align:left}
+  .keys div{display:flex;gap:7px;align-items:center}
+  .keys i{font-style:normal;color:var(--accent2);font-weight:700;min-width:74px}
+  #load{font-size:12px;color:var(--dim);letter-spacing:.14em;text-transform:uppercase}
+  .credit{position:absolute;bottom:12px;font-size:10px;color:#4d5a6b;letter-spacing:.1em}
+  @media (max-width:640px){ #help{display:none} }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div class="hud" id="hud">
+  <div class="panel" id="score"><div class="lbl">Score</div><div class="val" id="scVal">0</div><div class="sub" id="scSub">&nbsp;</div></div>
+  <div class="panel" id="minimap"><canvas id="mm" width="380" height="380"></canvas></div>
+  <div class="panel" id="spot"><span>Nearby:</span><b id="spotName">—</b></div>
+  <div class="panel" id="msg"><div class="big" id="msgBig"></div><div class="pts" id="msgPts"></div></div>
+  <div class="panel" id="help"></div>
+  <div id="combo"></div>
+  <div id="speed"><b id="spVal">0</b> km/h<br><span id="stVal">rolling</span></div>
+  <div id="touch"></div>
+</div>
+
+<div class="screen" id="menu">
+  <div class="logo">TONY HAWK<br><span>STREET LEAGUE</span> · NYC</div>
+  <div class="tag">Free-skate a procedural Manhattan: Empire State, Chrysler crown, Brooklyn Bridge cables,
+    plaza stair sets, park ledges and filthy flat bars. Chain tricks, grinds and manuals for a multiplier.</div>
+  <div class="keys" id="keyList"></div>
+  <button class="btn" id="btnPlay">SKATE</button>
+  <div id="load">loading city…</div>
+  <div class="credit">three.js · single file · no assets</div>
+</div>
+
+<div class="screen hide" id="pause">
+  <div class="logo" style="font-size:clamp(24px,6vw,44px)">PAUSED</div>
+  <div class="tag" id="pauseStats"></div>
+  <button class="btn" id="btnResume">RESUME</button>
+  <button class="btn ghost" id="btnRestart">NEW CITY</button>
+</div>
+
+<script>/*__INLINE__*/</script>
+</body>
+</html>
